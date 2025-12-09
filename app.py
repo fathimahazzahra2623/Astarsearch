@@ -1,19 +1,31 @@
 import streamlit as st
 import heapq
-import math
+import networkx as nx
+import matplotlib.pyplot as plt
 import pandas as pd
 import time
+import io # Untuk menyimpan plot matplotlib
 
-# --- 1. Fungsi Heuristik (Manhattan Distance) ---
-def heuristic(a, b):
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+# --- Data Graf Sesuai Gambar Anda ---
+# Format: (node, heuristic value)
+HEURISTICS = {
+    'S': 80, 'A': 80, 'B': 70, 'C': 70, 'E': 75, 
+    'F': 78, 'G': 0, 'H': 70, 'M': 70
+}
 
-# --- 2. Algoritma A* Search dengan Log Langkah ---
+# Format: (node1, node2, weight)
+EDGES = [
+    ('S', 'A', 10), ('S', 'B', 25), ('S', 'C', 10),
+    ('A', 'G', 105), ('B', 'E', 30), ('C', 'H', 20),
+    ('C', 'F', 5), ('E', 'G', 40), ('H', 'E', 15),
+    ('H', 'M', 40), ('F', 'H', 5), ('M', 'G', 20)
+]
+
+# --- 1. Algoritma A* Search dengan Log Lengkap ---
 def a_star_search_logged(graph, start, goal):
     
-    frontier = [(0, 0, start, [start])] # (f_cost, g_cost, node, path)
+    frontier = [(HEURISTICS[start], 0, start, [start])] # (f_cost, g_cost, node, path)
     cost_so_far = {start: 0}
-    explored = set()
     
     # Log utama untuk visualisasi langkah per langkah
     step_log = [] 
@@ -21,181 +33,173 @@ def a_star_search_logged(graph, start, goal):
     while frontier:
         f_cost, g_cost, current_node, current_path = heapq.heappop(frontier)
         
-        if current_node in explored:
-            continue
-            
-        explored.add(current_node)
+        # Log Open/Closed List Status SEBELUM eksplorasi
+        open_list_nodes = [n[2] for n in frontier]
         
-        # Log: Node saat ini sedang dieksplorasi
+        # Log: Node saat ini sedang dieksplorasi (Pop dari Frontier)
         step_log.append({
             'type': 'explore',
             'node': current_node,
             'g': g_cost,
-            'h': heuristic(current_node, goal),
+            'h': HEURISTICS.get(current_node, 0),
             'f': f_cost,
-            'path_so_far': current_path
+            'path_so_far': current_path,
+            'open_list': list(sorted(open_list_nodes)), # Node di frontier
+            'closed_list': list(sorted([n for n in cost_so_far if n not in open_list_nodes and n != current_node])) # Node yang cost-nya diketahui tapi sudah dieksplorasi/belum di frontier
         })
 
         if current_node == goal:
             # Log: Tujuan tercapai
-            step_log.append({
-                'type': 'goal',
-                'node': current_node,
-                'g': g_cost,
-                'h': 0,
-                'f': f_cost,
-                'path_so_far': current_path
-            })
-            return current_path, cost_so_far[goal], explored, step_log
+            return current_path, g_cost, step_log
 
         # Eksplorasi tetangga
-        for next_node in graph.get(current_node, []):
-            new_g_cost = cost_so_far[current_node] + graph[current_node][next_node]
+        for next_node in graph.neighbors(current_node):
+            weight = graph[current_node][next_node]['weight']
+            new_g_cost = cost_so_far[current_node] + weight
             
             if next_node not in cost_so_far or new_g_cost < cost_so_far[next_node]:
                 cost_so_far[next_node] = new_g_cost
-                h_cost = heuristic(next_node, goal)
+                h_cost = HEURISTICS.get(next_node, 0)
                 new_f_cost = new_g_cost + h_cost
                 new_path = current_path + [next_node]
                 
                 heapq.heappush(frontier, (new_f_cost, new_g_cost, next_node, new_path))
                 
-    return None, 0, explored, step_log # Tidak ditemukan jalur
+    return None, 0, step_log # Tidak ditemukan jalur
 
-# --- 3. Fungsi Pembuatan Grid Sederhana (Graf) ---
-def create_grid_graph(size_x, size_y, obstacle_nodes=None):
-    # (Fungsi ini tetap sama dari kode sebelumnya)
-    graph = {}
-    if obstacle_nodes is None: obstacle_nodes = set()
-    nodes = [(x, y) for x in range(size_x) for y in range(size_y)]
-    for x, y in nodes:
-        if (x, y) in obstacle_nodes: continue
-        neighbors = {}
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < size_x and 0 <= ny < size_y and (nx, ny) not in obstacle_nodes:
-                neighbors[(nx, ny)] = 1
-        if neighbors: graph[(x, y)] = neighbors
-    return graph
-
-# --- 4. Fungsi Visualisasi Bergerak (Simulasi) ---
-def visualize_movement(size_x, size_y, start, goal, obstacle, log_data):
+# --- 2. Fungsi Visualisasi Graf Langkah demi Langkah ---
+def draw_graph_step(G, pos, log, step_number, path_nodes=None, current_node=None):
     
-    # Placeholder untuk visualisasi yang akan diperbarui
-    viz_container = st.empty()
+    plt.figure(figsize=(10, 6))
     
-    color_map = {
-        0: "⬜️", 1: "⬛️", 2: "🟦", 3: "🟩", 4: "🟠", 5: "🔴", 6: "🚗"
-    }
-
-    # Fungsi untuk menggambar grid
-    def draw_grid(current_pos=None, current_path=None):
-        grid = [[0 for _ in range(size_y)] for _ in range(size_x)]
-        
-        # Tandai dasar
-        for ox, oy in obstacle: grid[ox][oy] = 1
-        grid[start[0]][start[1]] = 4 # Start
-        grid[goal[0]][goal[1]] = 5 # Goal
-        
-        # Tandai jalur yang sudah terbukti (setelah Goal ditemukan)
-        if current_path:
-            for px, py in current_path:
-                 if grid[px][py] < 3: grid[px][py] = 3
-
-        # Tandai posisi mobil saat ini (hanya saat eksplorasi)
-        if current_pos and grid[current_pos[0]][current_pos[1]] < 4:
-            grid[current_pos[0]][current_pos[1]] = 6 # Mobil
-
-        # Konversi ke emoji dan buat DataFrame
-        emoji_grid = [[color_map[grid[x][y]] for x in range(size_x)] for y in range(size_y)]
-        df = pd.DataFrame(emoji_grid).T
-        
-        # Gunakan 'with' untuk memperbarui container
-        with viz_container.container():
-            st.dataframe(
-                df,
-                column_config={i: st.column_config.Column(label=f"X={i}", width="small") for i in range(size_x)},
-                hide_index=False,
-                use_container_width=True,
-                height=size_y * 40
-            )
-
-    # Inisialisasi tampilan awal
-    draw_grid(current_pos=start)
-    time.sleep(1)
+    # Warna default untuk semua node/edge
+    node_colors = ['skyblue'] * len(G.nodes)
+    edge_colors = ['gray'] * len(G.edges)
     
-    # Jalankan simulasi langkah demi langkah
-    for i, log in enumerate(log_data):
-        if log['type'] == 'explore':
-            # Tampilkan pergerakan mobil ke node yang dieksplorasi
-            draw_grid(current_pos=log['node'])
-            st.info(f"Langkah {i+1}: Mengeksplorasi node {log['node']}. f(n)={log['f']}")
-            time.sleep(0.3) # Jeda visual
+    # Node dan Edge yang sudah dieksplorasi (Closed List)
+    closed_nodes = log.get('closed_list', [])
+    
+    # Node yang sedang dieksplorasi (Current Node)
+    current_node = log.get('node')
+
+    # Node yang ada di Frontier (Open List)
+    open_nodes = log.get('open_list', [])
+
+    # Update warna node berdasarkan status
+    node_color_map = {}
+    for i, node in enumerate(G.nodes):
+        if node == current_node:
+            node_color_map[node] = 'red'  # Node saat ini
+        elif node == 'G':
+            node_color_map[node] = 'green' # Tujuan
+        elif node in closed_nodes:
+            node_color_map[node] = 'lightcoral' # Closed List
+        elif node in open_nodes:
+            node_color_map[node] = 'lightgreen' # Open List
+        else:
+            node_color_map[node] = 'skyblue' # Default
         
-        elif log['type'] == 'goal':
-            # Setelah tujuan tercapai, tampilkan jalur final
-            st.balloons()
-            st.success(f"🎉 Langkah {i+1}: Tujuan {goal} ditemukan! Jalur terpendek ditemukan.")
-            draw_grid(current_pos=goal, current_path=log['path_so_far'])
-            
-            # Tampilkan detail akhir
-            df_status = pd.DataFrame(log_data)
-            st.subheader("Detail Eksplorasi Node (g, h, f)")
-            st.dataframe(df_status, use_container_width=True)
+        node_colors[i] = node_color_map[node]
 
-            return # Akhiri loop setelah tujuan tercapai
-            
-    st.error("Pencarian Selesai: Jalur tidak ditemukan.")
+    # Gambar Node
+    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=1200)
 
+    # Gambar Edge
+    nx.draw_networkx_edges(G, pos, edge_color='gray')
 
-# --- 5. Konfigurasi Aplikasi Streamlit ---
+    # Sorot Path (Jika Tujuan Sudah Ditemukan)
+    if log.get('type') == 'goal' and path_nodes:
+        path_edges = list(zip(path_nodes, path_nodes[1:]))
+        nx.draw_networkx_edges(G, pos, edgelist=path_edges, edge_color='red', width=3)
+
+    # Label Node
+    node_labels = {node: f"{node}\nh={HEURISTICS[node]}" for node in G.nodes}
+    nx.draw_networkx_labels(G, pos, labels=node_labels, font_size=9)
+
+    # Label Edge (Biaya/Weight)
+    edge_labels = nx.get_edge_attributes(G, 'weight')
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
+
+    plt.title(f"Langkah {step_number}: Node Dieksplorasi = {current_node}")
+    plt.axis('off')
+    
+    # Tampilkan plot di Streamlit
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    st.image(buf.getvalue(), caption=f"Visualisasi Graf - Langkah {step_number}", use_column_width=True)
+    plt.close() # Tutup plot agar memori tidak bocor
+
+# --- 3. Aplikasi Streamlit Utama ---
 
 st.set_page_config(layout="wide")
-st.title("🚗 Simulasi A* Search Langkah Per Langkah")
+st.title("⭐️ Visualisasi A* Search pada Graf Kustom")
+st.markdown("Visualisasi ini meniru struktur graf dan heuristik dari contoh gambar Anda. ")
 
-col_input, col_view = st.columns([1, 3])
+# Buat Graf NetworkX
+G = nx.Graph()
+G.add_weighted_edges_from(EDGES)
 
-with col_input:
-    st.header("Pengaturan Grid")
-    size_x = st.slider("Ukuran Lebar Grid (X):", 5, 15, 10, key='sw')
-    size_y = st.slider("Ukuran Tinggi Grid (Y):", 5, 15, 10, key='sh')
+# Atur tata letak node secara manual agar mirip gambar (Posisi tetap)
+pos = {
+    'S': (0, 3), 'A': (2, 4), 'B': (2.5, 3), 'C': (1, 1.5), 
+    'E': (4, 3), 'F': (2, 0.5), 'H': (3.5, 1.5), 'M': (5, 1), 'G': (6, 2.5)
+}
 
-    st.subheader("Koordinat")
-    start_x = st.slider("Mulai X:", 0, size_x - 1, 0, key='sx')
-    start_y = st.slider("Mulai Y:", 0, size_y - 1, 0, key='sy')
-    goal_x = st.slider("Tujuan X:", 0, size_x - 1, size_x - 1, key='gx')
-    goal_y = st.slider("Tujuan Y:", 0, size_y - 1, size_y - 1, key='gy')
+# Tampilkan Tabel Heuristik Awal
+st.subheader("Tabel Heuristik (h(n))")
+st.dataframe(pd.DataFrame([HEURISTICS], index=['h(n)']).T, use_container_width=True)
+st.markdown("---")
+
+if st.button("Mulai Simulasi A*"):
+    path, total_cost, step_log = a_star_search_logged(G, 'S', 'G')
+
+    # Container untuk status graf
+    graph_container = st.empty()
     
-    start_node = (start_x, start_y)
-    goal_node = (goal_x, goal_y)
+    # Container untuk open/closed list
+    list_container = st.empty()
+    
+    if path:
+        st.success(f"🎉 Jalur Ditemukan! Total Biaya Aktual (g(G)): **{total_cost}**")
+        st.code(f"Jalur Terpendek: {' -> '.join(path)}")
+    else:
+        st.error("Jalur tidak ditemukan!")
+        
+    st.markdown("---")
+    
+    # --- Loop Simulasi Langkah demi Langkah ---
+    for i, log in enumerate(step_log):
+        
+        # 1. Visualisasi Graf
+        with graph_container.container():
+            # Tampilkan graf dengan sorotan node yang sedang dieksplorasi
+            draw_graph_step(G, pos, log, i + 1, path_nodes=path if log['type'] == 'goal' else None, current_node=log['node'])
 
-    st.subheader("Obstacle (Hambatan)")
-    obstacle_input = st.text_area(
-        "Masukkan koordinat obstacle (x, y) dipisahkan koma dan baris baru:", 
-        "2,2\n3,2\n4,2\n4,3\n4,4", height=100
-    )
-
-obstacle_nodes = set()
-try:
-    for line in obstacle_input.split('\n'):
-        if line.strip():
-            x, y = map(int, line.strip().split(','))
-            if 0 <= x < size_x and 0 <= y < size_y:
-                 obstacle_nodes.add((x, y))
-except ValueError:
-    with col_input: st.error("Format obstacle tidak valid. Gunakan format 'x,y' per baris.")
-
-if start_node == goal_node:
-    with col_input: st.warning("Mulai dan Tujuan tidak boleh sama.")
-elif start_node in obstacle_nodes or goal_node in obstacle_nodes:
-    with col_input: st.error("Mulai atau Tujuan tidak boleh berada di area Obstacle.")
-else:
-    grid_graph = create_grid_graph(size_x, size_y, obstacle_nodes)
-
-    with col_input:
-        if st.button("Mulai Simulasi A*"):
-            path, total_cost, explored_nodes, step_log = a_star_search_logged(grid_graph, start_node, goal_node)
+        # 2. Tampilkan Open/Closed List dan Detail Biaya
+        with list_container.container():
+            st.subheader(f"Status Daftar (Langkah {i + 1})")
             
-            with col_view:
-                st.subheader("Simulasi Pergerakan")
-                visualize_movement(size_x, size_y, start_node, goal_node, obstacle_nodes, step_log)
+            # Tabel Open List
+            st.info(f"**Node Dieksplorasi (Current):** {log['node']}")
+
+            # Tabel Open List (Frontier)
+            open_list_display = pd.DataFrame(log['open_list'], columns=['Node'])
+            st.markdown(f"**Open List (Frontier):** {', '.join(log['open_list'])}")
+
+            # Tabel Closed List
+            closed_list_display = pd.DataFrame(log['closed_list'], columns=['Node'])
+            st.markdown(f"**Closed List:** {', '.join(log['closed_list'])}")
+            
+            # Tabel Detail Biaya Node Saat Ini
+            detail_data = {
+                'Biaya': ['g(n) (Aktual)', 'h(n) (Heuristik)', 'f(n) (Total)'],
+                'Nilai': [log['g'], log['h'], log['f']]
+            }
+            st.dataframe(pd.DataFrame(detail_data).set_index('Biaya'), use_container_width=True)
+
+
+        if log['type'] == 'goal':
+            st.balloons()
+            break
+            
+        time.sleep(1) # Jeda visual
